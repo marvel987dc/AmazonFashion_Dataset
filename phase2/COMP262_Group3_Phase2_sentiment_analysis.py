@@ -783,14 +783,8 @@ enhancement_summary_df
 
 # %%
 # 16 / 17 Local Hugging Face setup (host models locally)
-# This keeps processing local as required by the instruction.
-try:
-    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-except Exception:
-    import sys
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "transformers", "sentencepiece", "torch"])
-    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+# Steps 16 and 17 require transformers, torch, and sentencepiece to be installed from requirements.txt.
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 # Shared helper for local text generation with seq2seq models (T5/FLAN-T5)
 def local_seq2seq_generate(model_name, prompt, max_new_tokens=120):
@@ -803,8 +797,6 @@ def local_seq2seq_generate(model_name, prompt, max_new_tokens=120):
         do_sample=False
     )
     return tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-print("Transformers local seq2seq setup is ready.")
 
 # %%
 # 16. Summarize 10 reviews longer than 100 words into 50 words using local HF model
