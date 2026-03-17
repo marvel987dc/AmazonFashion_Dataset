@@ -543,4 +543,318 @@ if SHOW_PLOTS:
     plt.show()
 plt.close()
 
+# %% [markdown]
+# ## Phase 2: Machine Learning, Comparison, Review Enhancement, and Local LLM Tasks
+# 
+# This section adds only Phase 2 code and comments under the existing Phase 1 notebook content.
+# All Phase 1 code/comments remain unchanged.
+
+# %%
+# 11 / 12 / 13 / 14 / 15 / 16 / 17
+# Phase 2 setup for outputs and reproducibility (kept separate from Phase 1 config)
+import time
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC
+
+PHASE2_OUTPUT_DIR = "phase2_outputs"
+PHASE2_SAMPLE_SIZE = 2500
+PHASE2_TEST_SIZE = 0.30
+PHASE2_RANDOM_STATE = 42
+
+ensure_dir(PHASE2_OUTPUT_DIR)
+print("Phase 2 output folder:", PHASE2_OUTPUT_DIR)
+
+# 11 / 13 / 14 helper: save confusion matrices only to phase2_outputs
+def save_confusion_phase2(cm, labels, title, filename):
+    plt.figure()
+    plt.imshow(cm, interpolation="nearest")
+    plt.title(title)
+    plt.xticks(range(len(labels)), labels, rotation=30)
+    plt.yticks(range(len(labels)), labels)
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            plt.text(j, i, str(cm[i, j]), ha="center", va="center")
+    plt.tight_layout()
+    plt.savefig(os.path.join(PHASE2_OUTPUT_DIR, filename))
+    plt.show()
+    plt.close()
+
+# %%
+# 11.a. Select a subset of minimum 2000 reviews and prepare labels/text
+# This cell rebuilds a clean Phase 2 subset (2500 rows) from the original dataset.
+phase2_df = load_reviews_dataset(DATASET_PATH).copy()
+
+phase2_df["summary_text"] = phase2_df.get("summary", "").apply(to_text_maybe_list)
+phase2_df["review_text_clean"] = phase2_df.get("review_text", "").apply(to_text_maybe_list)
+phase2_df["full_text"] = phase2_df.apply(
+    lambda row: combine_summary_review(row["summary_text"], row["review_text_clean"]), axis=1
+)
+
+phase2_df["ratings"] = pd.to_numeric(phase2_df["ratings"], errors="coerce")
+phase2_df["label"] = phase2_df["ratings"].apply(label_from_rating)
+phase2_df = phase2_df.dropna(subset=["ratings", "label", "full_text"]).copy()
+phase2_df["full_text"] = phase2_df["full_text"].astype(str).str.strip()
+phase2_df = phase2_df[phase2_df["full_text"].str.len() > 0].copy()
+
+phase2_subset = phase2_df.sample(n=PHASE2_SAMPLE_SIZE, random_state=PHASE2_RANDOM_STATE).copy()
+phase2_subset = phase2_subset.reset_index(drop=True)
+
+print("Phase 2 subset shape:", phase2_subset.shape)
+print("Class distribution:\n", phase2_subset["label"].value_counts())
+
+# %% [markdown]
+# ### 11.b. Data exploration and preprocessing justification
+# 
+# We keep preprocessing simple and in module scope:
+# - Remove missing/empty records for fair model training.
+# - Normalize text with lowercase, URL removal, and whitespace cleanup.
+# - Keep labels from rating rules already used in Phase 1.
+# - Check class distribution and review length to validate the subset.
+
+# %%
+# 11.b. Carry out exploration and preprocessing on the subset
+# This cell reports subset quality and builds one cleaned text column for ML.
+phase2_subset["review_word_count"] = phase2_subset["full_text"].str.split().apply(len)
+print("Review length summary:\n", phase2_subset["review_word_count"].describe())
+print("Label proportions:\n", phase2_subset["label"].value_counts(normalize=True).round(4))
+
+# 11.b.i. Simple text normalization for ML pipeline input
+phase2_subset["ml_text"] = phase2_subset["full_text"].astype(str).str.lower()
+phase2_subset["ml_text"] = phase2_subset["ml_text"].str.replace(r"http\S+|www\.\S+", " ", regex=True)
+phase2_subset["ml_text"] = phase2_subset["ml_text"].str.replace(r"\s+", " ", regex=True).str.strip()
+
+print("Prepared ML text rows:", len(phase2_subset))
+
+# %% [markdown]
+# ### 11.c. Text representation choice
+# 
+# We use TF-IDF because it is a suitable and standard module-level representation for sentiment text classification. It converts text to weighted word features, is easy to explain, and works well with Logistic Regression and SVM for this task.
+
+# %%
+# 11.c. Represent text using TF-IDF
+# Fit/transform will happen inside model pipelines to avoid data leakage.
+X_all = phase2_subset["ml_text"].copy()
+y_all = phase2_subset["label"].copy()
+
+print("TF-IDF representation selected for model pipelines.")
+
+# %%
+# 11.d. Split data into 70% train and 30% test using stratified label distribution
+X_train, X_test, y_train, y_test = train_test_split(
+    X_all,
+    y_all,
+    test_size=PHASE2_TEST_SIZE,
+    random_state=PHASE2_RANDOM_STATE,
+    stratify=y_all
+)
+
+print("Train size:", len(X_train), "Test size:", len(X_test))
+print("Train label distribution:\n", y_train.value_counts(normalize=True).round(4))
+print("Test label distribution:\n", y_test.value_counts(normalize=True).round(4))
+
+# %%
+# 11.e. Build two ML sentiment models using training data
+# 11.e.i. Model 1: Logistic Regression with TF-IDF
+start_lr = time.time()
+lr_pipeline = Pipeline([
+    ("tfidf", TfidfVectorizer()),
+    ("clf", LogisticRegression(max_iter=1000, random_state=PHASE2_RANDOM_STATE))
+])
+lr_pipeline.fit(X_train, y_train)
+lr_train_seconds = time.time() - start_lr
+
+# 11.e.ii. Model 2: SVM (LinearSVC) with TF-IDF
+start_svm = time.time()
+svm_pipeline = Pipeline([
+    ("tfidf", TfidfVectorizer()),
+    ("clf", LinearSVC())
+])
+svm_pipeline.fit(X_train, y_train)
+svm_train_seconds = time.time() - start_svm
+
+# 12. Record training process results
+training_summary_df = pd.DataFrame([
+    {"model": "LogisticRegression", "train_rows": len(X_train), "train_seconds": round(lr_train_seconds, 3)},
+    {"model": "LinearSVC", "train_rows": len(X_train), "train_seconds": round(svm_train_seconds, 3)}
+])
+training_summary_path = os.path.join(PHASE2_OUTPUT_DIR, "12_training_summary.csv")
+training_summary_df.to_csv(training_summary_path, index=False)
+training_summary_df
+
+# %%
+# 13. Test both ML models using the same 30% test data and report required metrics
+labels_order = ["Negative", "Neutral", "Positive"]
+
+y_pred_lr = lr_pipeline.predict(X_test)
+y_pred_svm = svm_pipeline.predict(X_test)
+
+acc_lr, pr_lr, rc_lr, f1_lr, cm_lr = evaluate(y_test, y_pred_lr, labels=labels_order)
+acc_svm, pr_svm, rc_svm, f1_svm, cm_svm = evaluate(y_test, y_pred_svm, labels=labels_order)
+
+ml_test_metrics_df = pd.DataFrame([
+    {"model": "LogisticRegression", "accuracy": acc_lr, "precision_w": pr_lr, "recall_w": rc_lr, "f1_w": f1_lr},
+    {"model": "LinearSVC", "accuracy": acc_svm, "precision_w": pr_svm, "recall_w": rc_svm, "f1_w": f1_svm}
+])
+ml_test_metrics_path = os.path.join(PHASE2_OUTPUT_DIR, "13_ml_test_metrics.csv")
+ml_test_metrics_df.to_csv(ml_test_metrics_path, index=False)
+
+save_confusion_phase2(cm_lr, labels_order, "13 Confusion Matrix - Logistic Regression", "13_cm_logistic_regression.png")
+save_confusion_phase2(cm_svm, labels_order, "13 Confusion Matrix - Linear SVM", "13_cm_linear_svm.png")
+
+ml_test_metrics_df
+
+# %%
+# 14.a. Prepare fair comparison data (apples-to-apples): exact same test set for Lexicon and ML models
+# 14.b. Run Lexicon and ML models on same test rows and compare with same metrics
+X_test_vader = X_test.apply(preprocess_for_vader)
+X_test_textblob = X_test.apply(preprocess_for_textblob)
+
+y_pred_vader_same = vader_predict(X_test_vader)
+y_pred_textblob_same = textblob_predict(X_test_textblob)
+
+acc_v, pr_v, rc_v, f1_v, cm_v = evaluate(y_test, y_pred_vader_same, labels=labels_order)
+acc_tb, pr_tb, rc_tb, f1_tb, cm_tb = evaluate(y_test, y_pred_textblob_same, labels=labels_order)
+
+same_test_comparison_df = pd.DataFrame([
+    {"model": "VADER", "accuracy": acc_v, "precision_w": pr_v, "recall_w": rc_v, "f1_w": f1_v},
+    {"model": "TextBlob", "accuracy": acc_tb, "precision_w": pr_tb, "recall_w": rc_tb, "f1_w": f1_tb},
+    {"model": "LogisticRegression", "accuracy": acc_lr, "precision_w": pr_lr, "recall_w": rc_lr, "f1_w": f1_lr},
+    {"model": "LinearSVC", "accuracy": acc_svm, "precision_w": pr_svm, "recall_w": rc_svm, "f1_w": f1_svm}
+])
+
+same_test_comparison_path = os.path.join(PHASE2_OUTPUT_DIR, "14_model_comparison_same_test.csv")
+same_test_comparison_df.to_csv(same_test_comparison_path, index=False)
+
+save_confusion_phase2(cm_v, labels_order, "14 Confusion Matrix - VADER (same test)", "14_cm_vader_same_test.png")
+save_confusion_phase2(cm_tb, labels_order, "14 Confusion Matrix - TextBlob (same test)", "14_cm_textblob_same_test.png")
+
+same_test_comparison_df.sort_values("accuracy", ascending=False)
+
+# %% [markdown]
+# ### 15.a, 15.b, 15.c Review-based rating enhancement (from review sentiment)
+# 
+# Chosen strategy: improve raw rating values by adding review sentiment signal from a trained model.
+# 
+# Pseudo-code:
+# 1. Predict sentiment class from review text.
+# 2. Convert sentiment to rating adjustment: Positive = +1, Neutral = 0, Negative = -1.
+# 3. Add adjustment to original rating and clip to valid range [1, 5].
+# 4. Compare original vs enhanced rating distributions and agreement with sentiment labels.
+
+# %%
+# 15.a. Explain enhancement: use review sentiment to refine rating value signal
+# 15.b. Pseudo-code is documented in the markdown cell above
+# 15.c. Implement enhancement and record results
+sentiment_to_delta = {"Positive": 1, "Neutral": 0, "Negative": -1}
+
+phase2_test_results = pd.DataFrame({
+    "text": X_test.values,
+    "true_label": y_test.values,
+    "pred_label_lr": y_pred_lr
+})
+
+phase2_test_results = phase2_test_results.merge(
+    phase2_subset[["ml_text", "ratings"]].rename(columns={"ml_text": "text"}),
+    on="text",
+    how="left"
+)
+
+phase2_test_results["delta"] = phase2_test_results["pred_label_lr"].map(sentiment_to_delta).fillna(0)
+phase2_test_results["enhanced_rating"] = (phase2_test_results["ratings"] + phase2_test_results["delta"]).clip(1, 5)
+
+enhancement_summary_df = pd.DataFrame([
+    {"metric": "original_mean_rating", "value": round(float(phase2_test_results["ratings"].mean()), 4)},
+    {"metric": "enhanced_mean_rating", "value": round(float(phase2_test_results["enhanced_rating"].mean()), 4)},
+    {"metric": "num_test_rows", "value": int(len(phase2_test_results))}
+])
+
+enhancement_preview_path = os.path.join(PHASE2_OUTPUT_DIR, "15_enhanced_ratings_preview.csv")
+phase2_test_results[["text", "ratings", "pred_label_lr", "delta", "enhanced_rating"]].head(50).to_csv(enhancement_preview_path, index=False)
+
+enhancement_summary_path = os.path.join(PHASE2_OUTPUT_DIR, "15_enhancement_summary.csv")
+enhancement_summary_df.to_csv(enhancement_summary_path, index=False)
+
+enhancement_summary_df
+
+# %%
+# 16 / 17 Local Hugging Face setup (host models locally)
+# This keeps processing local as required by the instruction.
+try:
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+except Exception:
+    import sys
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "transformers", "sentencepiece", "torch"])
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+# Shared helper for local text generation with seq2seq models (T5/FLAN-T5)
+def local_seq2seq_generate(model_name, prompt, max_new_tokens=120):
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=False
+    )
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+print("Transformers local seq2seq setup is ready.")
+
+# %%
+# 16. Summarize 10 reviews longer than 100 words into 50 words using local HF model
+long_reviews_df = phase2_subset[phase2_subset["review_word_count"] > 100].copy()
+long_reviews_df = long_reviews_df.head(10).copy()
+
+def to_50_words(text):
+    words = str(text).split()
+    return " ".join(words[:50])
+
+summary_rows = []
+for idx, row in long_reviews_df.iterrows():
+    prompt = "summarize in about 50 words: " + str(row["full_text"])
+    generated = local_seq2seq_generate("t5-small", prompt, max_new_tokens=120)
+    summary_50 = to_50_words(generated)
+    summary_rows.append({
+        "source_index": int(idx),
+        "original_review": row["full_text"],
+        "summary_50_words": summary_50
+    })
+
+summary_10_df = pd.DataFrame(summary_rows)
+summary_10_path = os.path.join(PHASE2_OUTPUT_DIR, "16_long_reviews_50word_summaries.csv")
+summary_10_df.to_csv(summary_10_path, index=False)
+
+print("First two summaries for report:")
+summary_10_df.head(2)
+
+# %%
+# 17. Generate one service representative response for a question-like review using local HF model
+question_reviews_df = phase2_subset[phase2_subset["full_text"].str.contains("\?", regex=True, na=False)].copy()
+
+if len(question_reviews_df) == 0:
+    question_text = "Can you help me with the product size and return policy?"
+else:
+    question_text = str(question_reviews_df.iloc[0]["full_text"])
+
+response_prompt = (
+    "You are a customer service representative. "
+    "Write a helpful, polite response to this customer review question: " + question_text
+)
+
+service_response = local_seq2seq_generate("google/flan-t5-small", response_prompt, max_new_tokens=120)
+
+step17_df = pd.DataFrame([
+    {"question_review": question_text, "service_response": service_response}
+])
+step17_path = os.path.join(PHASE2_OUTPUT_DIR, "17_question_response.csv")
+step17_df.to_csv(step17_path, index=False)
+
+step17_df
+
 
