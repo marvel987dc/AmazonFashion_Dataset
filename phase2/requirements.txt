@@ -1,0 +1,12 @@
+numpy
+pandas
+matplotlib
+scikit-learn
+vaderSentiment
+textblob
+ipython
+ipykernel
+notebook
+jupyterlab
+transformers
+torch
